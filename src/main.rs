@@ -1,9 +1,12 @@
 use quick_xml::de::from_str;
 use semver::Version;
 use serde::Deserialize;
-use std::fs;
+use std::fs::{self, File};
 use std::io;
 use std::path::Path;
+use walkdir::WalkDir;
+use zip::write::FileOptions;
+use zip::CompressionMethod;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manifest_path = Path::new("manifest.xml");
@@ -55,8 +58,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     copy_sources(&plugin_dir)?;
     fs::copy(manifest_path, plugin_dir.join("manifest.xml"))?;
 
+    let temp_zip = release_dir.join(format!("{}.zip", tool_id));
+    zip_dir(&plugin_dir, &temp_zip)?;
+    fs::remove_dir_all(&plugin_dir)?;
     let output_zip = release_dir.join(&folder_name);
-    zip_dir(&plugin_dir, &output_zip)?;
+    fs::rename(temp_zip, &output_zip)?;
     println!("Created {}", output_zip.display());
     Ok(())
 }
@@ -145,20 +151,33 @@ fn copy_sources(dest: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn zip_dir(dir: &Path, out: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let folder = dir
-        .file_name()
+    dir.file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "invalid path"))?;
-    let status = std::process::Command::new("zip")
-        .arg("-r")
-        .arg(out)
-        .arg(folder)
-        .current_dir(dir.parent().unwrap())
-        .status()?;
-    if !status.success() {
-        return Err(Box::new(io::Error::new(
-            io::ErrorKind::Other,
-            "zip command failed",
-        )));
+    let file = File::create(out)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = FileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+
+    let base = dir.parent().unwrap();
+
+    for entry in WalkDir::new(dir) {
+        let entry = entry?;
+        let path = entry.path();
+        let name = path.strip_prefix(base)?.to_str().unwrap().replace('\\', "/");
+
+        if path.is_file() {
+            zip.start_file(name, options)?;
+            let mut f = File::open(path)?;
+            io::copy(&mut f, &mut zip)?;
+        } else if path.is_dir() {
+            if name.ends_with('/') {
+                zip.add_directory(name, options)?;
+            } else if !name.is_empty() {
+                zip.add_directory(format!("{}/", name), options)?;
+            }
+        }
     }
+    zip.finish()?;
     Ok(())
 }
