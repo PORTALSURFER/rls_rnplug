@@ -1,5 +1,5 @@
-use quick_xml::Reader;
-use quick_xml::events::Event;
+use quick_xml::de::from_str;
+use serde::Deserialize;
 use semver::Version;
 use std::fs;
 use std::io;
@@ -14,7 +14,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut manifest_str = fs::read_to_string(manifest_path)?;
 
-    let (tool_id, old_version) = parse_manifest(&manifest_str)?;
+    let (tool_id, old_version) = match parse_manifest(&manifest_str) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Failed to parse manifest.xml: {e}");
+            std::process::exit(1);
+        }
+    };
 
     let mut version = Version::parse(&old_version)?;
     version.minor += 1;
@@ -49,35 +55,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn parse_manifest(contents: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
-    let mut reader = Reader::from_str(contents);
-    reader.trim_text(true);
-    let mut buf = Vec::new();
-    let mut id = None;
-    let mut version = None;
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct Manifest {
+    #[serde(rename = "@doc_version")]
+    doc_version: Option<u32>,
+    api_version: Option<u32>,
+    author: Option<String>,
+    id: Option<String>,
+    name: Option<String>,
+    version: Option<String>,
+    description: Option<String>,
+}
 
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) if e.name().as_ref() == b"Id" => {
-                if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                    id = Some(t.unescape()?.to_string());
-                }
-            }
-            Ok(Event::Start(ref e)) if e.name().as_ref() == b"Version" => {
-                if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                    version = Some(t.unescape()?.to_string());
-                }
-            }
-            Ok(Event::Eof) => break,
-            Ok(_) => {}
-            Err(e) => return Err(Box::new(e)),
+#[derive(Debug)]
+enum ManifestError {
+    Xml(quick_xml::DeError),
+    MissingField(&'static str),
+}
+
+impl std::fmt::Display for ManifestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ManifestError::Xml(e) => write!(f, "XML error: {e}"),
+            ManifestError::MissingField(field) => write!(f, "missing required field `{field}`"),
         }
-        buf.clear();
     }
+}
 
-    let id = id.ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Id not found"))?;
-    let version =
-        version.ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Version not found"))?;
+impl std::error::Error for ManifestError {}
+
+fn parse_manifest(contents: &str) -> Result<(String, String), ManifestError> {
+    let manifest: Manifest = from_str(contents).map_err(ManifestError::Xml)?;
+
+    let id = manifest.id.ok_or(ManifestError::MissingField("Id"))?;
+    let version = manifest.version.ok_or(ManifestError::MissingField("Version"))?;
+
     Ok((id, version))
 }
 
