@@ -55,9 +55,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     copy_sources(&plugin_dir)?;
     fs::copy(manifest_path, plugin_dir.join("manifest.xml"))?;
 
-    let output_zip = release_dir.join(&folder_name);
-    zip_dir(&plugin_dir, &output_zip)?;
-    println!("Created {}", output_zip.display());
+    let temp_zip = release_dir.join(format!("{}.zip", tool_id));
+    if temp_zip.exists() {
+        fs::remove_file(&temp_zip)?;
+    }
+    zip_dir(&plugin_dir, &temp_zip)?;
+    fs::remove_dir_all(&plugin_dir)?;
+    let final_zip = release_dir.join(&folder_name);
+    fs::rename(&temp_zip, &final_zip)?;
+    println!("Created {}", final_zip.display());
     Ok(())
 }
 
