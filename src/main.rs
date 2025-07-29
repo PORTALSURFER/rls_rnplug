@@ -4,7 +4,6 @@ use serde::Deserialize;
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
-use walkdir::WalkDir;
 use zip::write::FileOptions;
 use zip::CompressionMethod;
 
@@ -48,21 +47,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let release_dir = Path::new("release");
     fs::create_dir_all(release_dir)?;
 
-    let folder_name = format!("{}.xrnx", tool_id);
-    let plugin_dir = release_dir.join(&folder_name);
-    if plugin_dir.exists() {
-        fs::remove_dir_all(&plugin_dir)?;
+    let output_zip = release_dir.join(format!("{}.xrnx", tool_id));
+    if output_zip.exists() {
+        fs::remove_file(&output_zip)?;
     }
-    fs::create_dir_all(&plugin_dir)?;
-
-    copy_sources(&plugin_dir)?;
-    fs::copy(manifest_path, plugin_dir.join("manifest.xml"))?;
-
-    let temp_zip = release_dir.join(format!("{}.zip", tool_id));
-    zip_dir(&plugin_dir, &temp_zip)?;
-    fs::remove_dir_all(&plugin_dir)?;
-    let output_zip = release_dir.join(&folder_name);
-    fs::rename(temp_zip, &output_zip)?;
+    zip_sources(manifest_path, &output_zip)?;
     println!("Created {}", output_zip.display());
     Ok(())
 }
@@ -131,53 +120,37 @@ fn parse_version(input: &str) -> Result<Version, semver::Error> {
     }
 }
 
-fn copy_sources(dest: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    for entry in fs::read_dir(".")? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().map(|e| e == "lua").unwrap_or(false) {
-            let file_name = path.file_name().unwrap();
-            fs::copy(&path, dest.join(file_name))?;
-        }
-    }
-    let readme_lower = Path::new("readme.md");
-    let readme_upper = Path::new("README.md");
-    if readme_lower.exists() {
-        fs::copy(readme_lower, dest.join("README.md"))?;
-    } else if readme_upper.exists() {
-        fs::copy(readme_upper, dest.join("README.md"))?;
-    }
-    Ok(())
-}
-
-fn zip_dir(dir: &Path, out: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    dir.file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "invalid path"))?;
+fn zip_sources(manifest: &Path, out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let file = File::create(out)?;
     let mut zip = zip::ZipWriter::new(file);
     let options = FileOptions::default()
         .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o644);
 
-    let base = dir.parent().unwrap();
-
-    for entry in WalkDir::new(dir) {
+    for entry in fs::read_dir(".")? {
         let entry = entry?;
         let path = entry.path();
-        let name = path.strip_prefix(base)?.to_str().unwrap().replace('\\', "/");
-
-        if path.is_file() {
+        if path.extension().map(|e| e == "lua").unwrap_or(false) {
+            let name = path.file_name().unwrap().to_str().unwrap();
             zip.start_file(name, options)?;
             let mut f = File::open(path)?;
             io::copy(&mut f, &mut zip)?;
-        } else if path.is_dir() {
-            if name.ends_with('/') {
-                zip.add_directory(name, options)?;
-            } else if !name.is_empty() {
-                zip.add_directory(format!("{}/", name), options)?;
-            }
         }
     }
+
+    let readme_lower = Path::new("readme.md");
+    let readme_upper = Path::new("README.md");
+    if readme_lower.exists() || readme_upper.exists() {
+        let path = if readme_lower.exists() { readme_lower } else { readme_upper };
+        zip.start_file("README.md", options)?;
+        let mut f = File::open(path)?;
+        io::copy(&mut f, &mut zip)?;
+    }
+
+    zip.start_file("manifest.xml", options)?;
+    let mut f = File::open(manifest)?;
+    io::copy(&mut f, &mut zip)?;
+
     zip.finish()?;
     Ok(())
 }
