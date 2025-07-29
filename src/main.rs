@@ -1,6 +1,6 @@
 use quick_xml::de::from_str;
-use serde::Deserialize;
 use semver::Version;
+use serde::Deserialize;
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
@@ -25,7 +25,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let mut version = Version::parse(&old_version)?;
+    let mut version = match parse_version(&old_version) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Invalid version '{old_version}': {e}");
+            return Err(Box::new(e));
+        }
+    };
     version.minor += 1;
     // zero out patch if not present
     if version.build.is_empty() && version.pre.is_empty() {
@@ -95,9 +101,34 @@ fn parse_manifest(contents: &str) -> Result<(String, String), ManifestError> {
     let manifest: Manifest = from_str(contents).map_err(ManifestError::Xml)?;
 
     let id = manifest.id.ok_or(ManifestError::MissingField("Id"))?;
-    let version = manifest.version.ok_or(ManifestError::MissingField("Version"))?;
+    let version = manifest
+        .version
+        .ok_or(ManifestError::MissingField("Version"))?;
 
     Ok((id, version))
+}
+
+fn parse_version(input: &str) -> Result<Version, semver::Error> {
+    match Version::parse(input) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            let (base, rest) = match input.find(|c| c == '-' || c == '+') {
+                Some(idx) => (&input[..idx], Some(&input[idx..])),
+                None => (input, None),
+            };
+            let count = base.split('.').filter(|s| !s.is_empty()).count();
+            let adjusted = match count {
+                1 => format!("{}.0.0", base.trim_end_matches('.')),
+                2 => format!("{}.0", base.trim_end_matches('.')),
+                _ => return Err(e),
+            };
+            let candidate = match rest {
+                Some(r) => format!("{}{}", adjusted, r),
+                None => adjusted,
+            };
+            Version::parse(&candidate)
+        }
+    }
 }
 
 fn copy_sources(dest: &Path) -> Result<(), Box<dyn std::error::Error>> {
